@@ -196,4 +196,102 @@ def upload_chunk():
 @socketio.on('join')
 def on_join(data):
     dev_id = data.get('device_id')
-    ip = get
+    ip = get_ip()
+    if BannedDevice.query.filter_by(device_id=dev_id).first() or BannedIP.query.filter_by(ip_address=ip).first():
+        emit('join_status', 'banned')
+        return
+
+    r = Room.query.filter_by(name=data['room'], password=data['password']).first()
+    if r:
+        join_room(data['room'])
+        active_sessions[request.sid] = {'user': data['username'], 'room': data['room'], 'ip': ip, 'device_id': dev_id}
+        
+        log = VisitorLog.query.filter_by(device_id=dev_id, room_name=data['room']).first()
+        if not log:
+            db.session.add(VisitorLog(username=data['username'], ip_address=ip, device_id=dev_id, room_name=data['room'], last_visit=datetime.now().strftime("%Y-%m-%d %H:%M")))
+        else:
+            log.username = data['username']
+            log.ip_address = ip
+            log.last_visit = datetime.now().strftime("%Y-%m-%d %H:%M")
+        db.session.commit()
+
+        emit('join_status', 'success')
+        users = [s['user'] for s in active_sessions.values() if s['room'] == data['room']]
+        emit('update_users', users, to=data['room'])
+        
+        for m in Message.query.filter_by(room=data['room']).all():
+            emit('message', {"id": m.id, "username": m.username, "msg": m.content, "reply_to": m.reply_to, "file": m.file, "file_type": m.file_type, "time": m.time, "reactions": m.reactions})
+    else: 
+        emit('join_status', 'error')
+
+@socketio.on('disconnect')
+def on_disconnect():
+    s = active_sessions.pop(request.sid, None)
+    if s:
+        room = s['room']
+        users = [ss['user'] for ss in active_sessions.values() if ss['room'] == room]
+        emit('update_users', users, to=room)
+
+@socketio.on('message')
+def handle_msg(data):
+    session_data = active_sessions.get(request.sid)
+    if not session_data or BannedDevice.query.filter_by(device_id=session_data['device_id']).first() or BannedIP.query.filter_by(ip_address=session_data['ip']).first():
+        return
+
+    ts = datetime.now().strftime("%I:%M %p")
+    ft = None
+    if data.get('file'):
+        ext = data['file'].split('.')[-1].lower()
+        if ext in ['jpg', 'jpeg', 'png', 'gif', 'webp']: ft = 'image'
+        elif ext in ['mp4', 'webm', 'ogg']: ft = 'video'
+        elif ext in ['mp3', 'wav', 'weba']: ft = 'audio'
+        else: ft = 'file'
+
+    new_m = Message(room=data['room'], username=data['username'], content=data.get('msg'), reply_to=data.get('reply_to'), file=data.get('file'), file_type=ft, time=ts, reactions="{}")
+    db.session.add(new_m)
+    db.session.commit()
+    
+    emit('message', {"id": new_m.id, "username": data['username'], "msg": data.get('msg'), "reply_to": data.get('reply_to'), "file": data.get('file'), "file_type": ft, "time": ts, "reactions": "{}"}, to=data['room'])
+
+@socketio.on('delete_message')
+def delete_msg(data):
+    m = Message.query.get(data['id'])
+    session_data = active_sessions.get(request.sid)
+    if m and session_data and m.username == session_data['user']:
+        room = m.room
+        db.session.delete(m)
+        db.session.commit()
+        emit('message_deleted', {'id': data['id']}, to=room)
+
+@socketio.on('send_reaction')
+def handle_reaction(data):
+    session_data = active_sessions.get(request.sid)
+    if not session_data: return
+
+    msg_id = data.get('msg_id')
+    emoji = data.get('emoji')
+    username = session_data['user']
+
+    m = Message.query.get(msg_id)
+    if m:
+        try:
+            rx = json.loads(m.reactions or "{}")
+        except:
+            rx = {}
+        
+        if emoji not in rx:
+            rx[emoji] = []
+            
+        if username in rx[emoji]:
+            rx[emoji].remove(username)
+            if not rx[emoji]:
+                del rx[emoji]
+        else:
+            rx[emoji].append(username)
+            
+        m.reactions = json.dumps(rx)
+        db.session.commit()
+        emit('update_reaction', {'msg_id': msg_id, 'reactions': rx}, to=m.room)
+
+if __name__ == '__main__': 
+    socketio.run(app, host='0.0.0.0', port=10000)
