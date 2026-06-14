@@ -10,7 +10,7 @@ from datetime import datetime
 app = Flask(__name__)
 app.config['SECRET_KEY'] = 'anas_chat_437_ultra'
 app.config['UPLOAD_FOLDER'] = 'static/uploads'
-# تم تغيير اسم قاعدة البيانات إلى v14 لإنشاء جدول الرسائل الجديد الذي يدعم التفاعلات
+app.config['STICKERS_FOLDER'] = 'static/stickers' # مجلد حزم الملصقات المحلية الجديد
 app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///anas_chat_v14.db'
 
 ADMIN_PASSWORD = "anas_admin_2026"
@@ -18,8 +18,11 @@ ADMIN_PASSWORD = "anas_admin_2026"
 db = SQLAlchemy(app)
 socketio = SocketIO(app, cors_allowed_origins="*", async_mode='eventlet')
 
+# التأكد من وجود المجلدات المطلوبة
 if not os.path.exists(app.config['UPLOAD_FOLDER']): 
     os.makedirs(app.config['UPLOAD_FOLDER'])
+if not os.path.exists(app.config['STICKERS_FOLDER']): 
+    os.makedirs(app.config['STICKERS_FOLDER'])
 
 class SiteSetting(db.Model):
     id = db.Column(db.Integer, primary_key=True)
@@ -39,7 +42,6 @@ class Message(db.Model):
     file = db.Column(db.String(200))
     file_type = db.Column(db.String(20))
     time = db.Column(db.String(20))
-    # عمود جديد لحفظ التفاعلات كـ JSON
     reactions = db.Column(db.String(2000), default="{}")
 
 class BannedDevice(db.Model): 
@@ -177,6 +179,14 @@ def api_unban():
 def home(): 
     return render_template('index.html')
 
+# مسار جديد لجلب الملصقات المحلية تلقائياً
+@app.route('/api/get_stickers')
+def get_stickers():
+    if os.path.exists(app.config['STICKERS_FOLDER']):
+        stickers = [f for f in os.listdir(app.config['STICKERS_FOLDER']) if f.lower().endswith(('.png', '.gif', '.webp', '.jpg', '.jpeg'))]
+        return jsonify(stickers)
+    return jsonify([])
+
 @app.route('/create_room', methods=['POST'])
 def create_room():
     data = request.json
@@ -267,7 +277,6 @@ def delete_msg(data):
         db.session.commit()
         emit('message_deleted', {'id': data['id']}, to=room)
 
-# مسار جديد لمعالجة تفاعلات الإيموجي
 @socketio.on('send_reaction')
 def handle_reaction(data):
     session_data = active_sessions.get(request.sid)
@@ -284,7 +293,6 @@ def handle_reaction(data):
         except:
             rx = {}
         
-        # نظام ذكي: إذا كان المستخدم متفاعلاً بهذا الإيموجي، قم بإزالته. وإلا أضفه.
         if emoji not in rx:
             rx[emoji] = []
             
