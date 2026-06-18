@@ -1,4 +1,0 @@
-Flask
-Flask-SocketIO
-Flask-SQLAlchemy
-eventlet==0.35.2
